@@ -1,102 +1,151 @@
-# 🌊 Lakehouse Ingestion Pipeline (Phase 1: Platform Foundation)
+# 🌊 E-Commerce Data Lakehouse Ingestion & Transformation Pipeline
 
-This repository hosts the platform foundation for a local, production-style Data Lakehouse. Running on Windows 11 / WSL2 via Docker, it integrates object storage, transactional table catalogs, and distributed compute, laying the groundwork for raw API ingestion, data version control (DVC), Spark transformations, Airflow orchestration, and future ML/Feature Engineering workloads.
+A production-grade, local Data Lakehouse platform built on a containerized architecture. This project serves as the foundation for modern data engineering workloads—incorporating raw ingestion landing, transactional tables (ACID) on object storage, distributed compute, metadata catalog tracking, data quality enforcement, and workflow orchestration.
 
 ---
 
-## 🗺️ System Architecture
+## 🎯 Project Goals & Objectives
 
-The following diagram illustrates the flow of raw data to processed tables and metadata catalogs:
+1. **Implement a Medallion Architecture**: Demonstrate a clean flow of data from raw unstructured/semi-structured files (Bronze) to structured and conformed tables (Silver), up to aggregated analytical views (Gold).
+2. **ACID Transactions on Object Storage**: Leverage **Apache Iceberg** as the open table format on top of **MinIO** to provide ACID transactions, time travel, schema evolution, and partition layout changes.
+3. **Decoupled Catalog Management**: Utilize a standalone **Iceberg REST Catalog** to manage table metadata independently of Spark compute nodes, enabling concurrent access.
+4. **End-to-End Orchestration**: Schedule and backfill daily data runs using **Apache Airflow**, demonstrating how execution dates (`{{ ds }}`) partition and process incremental transaction files.
+5. **Compute at Scale**: Configure **Apache Spark (PySpark)** to perform transformations (cleansing, typecasting, SQL MERGE operations, and aggregations) with optimized S3 file interactions.
+6. **Infrastructure Foundation for Future Phases**: Position the repository for future expansions, including external API data harvesting, Data Version Control (DVC) tracking for machine learning workflows, and advanced feature engineering pipelines.
+
+---
+
+## 🏗️ Architectural Blueprint
+
+The pipeline is coordinated and executed entirely within Docker containers:
 
 ```mermaid
 graph TD
-    subgraph Ingestion & Landing [Bronze Layer]
-        A["External Raw API Data"] -->|"DVC Ingestion"| B["landing-zone (MinIO S3 Bucket)"]
+    subgraph Storage [Object Storage Zone]
+        landing[(MinIO: landing-zone bucket)]
+        warehouse[(MinIO: warehouse bucket)]
     end
 
-    subgraph Table Warehouse [Silver & Gold Layers]
-        B -->|"Read & Clean (pyspark)"| C["warehouse (MinIO S3 Bucket)"]
-        D["Apache Iceberg REST Catalog (tabular/iceberg-rest:0.6.0)"] -->|"ACID Metadata Transactions"| C
+    subgraph Orchestration [Apache Airflow]
+        dag[lakehouse_ingestion_dag] -->|Task 1| gen["generate_mock_data.py"]
+        dag -->|Task 2| b2s["bronze_to_silver.py"]
+        dag -->|Task 3| s2g["silver_to_gold.py"]
     end
 
-    subgraph Distributed Compute [Processing Engine]
-        E["Apache Spark (jupyter/pyspark-notebook:spark-3.5.0)"] -->|"Write / Query Tables"| D
-        E -->|"S3 Data Access"| C
+    subgraph Compute & Catalog [Spark & Iceberg]
+        gen -->|Write Raw JSON| landing
+        b2s -->|Read JSON| landing
+        b2s -->|Write Iceberg Data| warehouse
+        b2s -->|Update Schema & Table Locks| cat[Iceberg REST Catalog]
+        s2g -->|Read Silver Tables| warehouse
+        s2g -->|Write Gold Aggregates| warehouse
+        s2g -->|Update Schema & Table Locks| cat
     end
 
-    style B fill:#f9f,stroke:#333,stroke-width:2px
-    style C fill:#bbf,stroke:#333,stroke-width:2px
-    style D fill:#bfb,stroke:#333,stroke-width:2px
-    style E fill:#ffb,stroke:#333,stroke-width:2px
+    subgraph Exploration [Client Interfaces]
+        jup[Jupyter Lab Notebook] -->|Query REST| cat
+        jup -->|S3 Data Fetch| warehouse
+        exp["explore_data.py (CLI)"] -->|Query REST| cat
+    end
+
+    style landing fill:#f9f,stroke:#333,stroke-width:2px
+    style warehouse fill:#bbf,stroke:#333,stroke-width:2px
+    style cat fill:#bfb,stroke:#333,stroke-width:2px
+    style dag fill:#ffb,stroke:#333,stroke-width:2px
 ```
 
 ---
 
-## 🛠️ Service Descriptions
+## 📦 Medallion Storage Design
 
-1. **MinIO Object Store**: A high-performance, S3-compatible object storage server. MinIO hosts the physical directories for raw landing data and managed Iceberg data files.
-2. **Apache Iceberg REST Catalog**: The official metadata management interface using the Iceberg REST protocol. It coordinates transaction commits, table schema locks, and snapshot lifecycle details, decoupled from Spark compute.
-3. **Apache Spark**: Distributed query engine configured with the native Iceberg Spark extensions and AWS S3 FileIO plugins to execute parallel data pipelines and transformations.
+This repository maps the landing zone and warehouse storage layers inside MinIO as follows:
+
+### 1. Bronze Layer (`landing-zone` bucket)
+- **Purpose**: Serves as the landing zone for raw, immutable snapshots of dimensional catalogs and daily transactional streams.
+- **Layout**:
+  - `customers/customers.json`: Snapshot of customer profiles with SCD updates.
+  - `products/products.json`: Snapshot of product catalogs (pricing and stock updates).
+  - `orders/year=YYYY/month=MM/day=DD/orders.json`: Daily transaction logs.
+  - `order_items/year=YYYY/month=MM/day=DD/order_items.json`: Daily order items breakdown.
+
+### 2. Silver Layer (`warehouse` bucket)
+- **Purpose**: Cleansed, schema-enforced, and deduplicated tables stored in Apache Iceberg format.
+- **Iceberg Tables (`demo.db.*`)**:
+  - `demo.db.customers`: Conformed customer profiles with transaction history.
+  - `demo.db.products`: Cleaned inventory and pricing.
+  - `demo.db.orders`: Partitioned by day using Iceberg's native `days(order_date)` hidden partitioning.
+  - `demo.db.order_items`: Granular order items linked to order IDs.
+- **Merge Logic**: Updates are processed via SQL `MERGE INTO` queries, enabling upserts for changed customer records and order statuses.
+
+### 3. Gold Layer (`warehouse` bucket)
+- **Purpose**: Cleaned, business-level aggregates designed for analytical reporting, business intelligence dashboards, and machine learning feature stores.
+- **Iceberg Tables (`demo.db.*`)**:
+  - `demo.db.gold_daily_sales`: Aggregates total revenue, order count, average order value, and cancel counts per date.
+  - `demo.db.gold_customer_metrics`: Customer lifetime value (LTV), total purchase count, and signup recency.
+  - `demo.db.gold_category_performance`: Sales breakdown and unit volumes sold per product category.
 
 ---
 
-## 📦 Storage Medallion Architecture
+## ⚙️ Container Port Configurations
 
-- **`landing-zone` Bucket (Bronze Layer)**:
-  - Stores raw, immutable API response snapshots and files (e.g., `/weather`, `/crypto`).
-  - Tracked via Data Version Control (DVC) for auditability.
-- **`warehouse` Bucket (Silver + Gold Layer)**:
-  - **Silver Layer**: Cleansed, conformed, and typed datasets stored in Iceberg tables.
-  - **Gold Layer**: Feature stores, business analytics, and aggregated data marts formatted as queryable Iceberg tables.
+All containers run inside the `lakehouse-net` Docker network. Port mapping is configured as:
 
----
-
-## 🔌 Port Mappings
-
-| Service | Port | Description |
-| :--- | :--- | :--- |
-| **MinIO API** | `9000` | S3-compatible client API endpoint |
-| **MinIO UI** | `9001` | Object browser web interface |
-| **Iceberg REST** | `8181` | Catalog management API endpoint |
-| **Spark UI / Jupyter** | `8080` / `8888` | Spark cluster master UI / Notebook environment |
+| Service | Host Port | Target Port | UI/API Endpoint |
+| :--- | :--- | :--- | :--- |
+| **Airflow Webserver** | `8080` | `8080` | [http://localhost:8080](http://localhost:8080) (Credentials: `admin`/`admin`) |
+| **Spark Master / Jupyter** | `8888` | `8888` | [http://localhost:8888](http://localhost:8888) (Jupyter Notebook Console) |
+| **MinIO API Console** | `9001` | `9001` | [http://localhost:9001](http://localhost:9001) (Credentials: `admin`/`supersecretpassword`) |
+| **MinIO S3 API** | `9000` | `9000` | S3 clients connection endpoint |
+| **Iceberg REST Catalog** | `8181` | `8181` | [http://localhost:8181/v1/config](http://localhost:8181/v1/config) |
 
 ---
 
-## 🚀 Setup Instructions
+## 🚀 Getting Started & Setup
 
-### 1. Install Local Dependencies
-Set up your python environment and install the pinned requirement libraries:
+### 1. Host Verification Environment
+Prepare the host machine environment to run checking scripts. Since Apache Airflow and PySpark run containerized, install only the S3 communication client and request helpers on the host:
 ```bash
-pip install -r requirements.txt
+pip install boto3==1.34.50 requests==2.31.0
 ```
 
-### 2. Start the Infrastructure
-Launch all local storage, catalog, and compute services using Docker Compose:
+### 2. Launch Infrastructure
+Start the database, object storage, REST catalog, Spark worker, and Airflow orchestration engine:
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-### 3. Run Infrastructure Verification
-Run the verification script to assert catalog availability, MinIO API responsiveness, and default bucket creation:
+### 3. Run Verification Tests
+Assert that the local services are healthy and that the MinIO Client has initialized the `landing-zone` and `warehouse` buckets:
 ```bash
 python verify_infra.py
 ```
 
 ---
 
-## 📋 Expected Verification Output
+## 📅 Orchestration Flow & Incremental Runs
 
-When the foundation starts up successfully, running the verification script prints the following console trace:
+The Apache Airflow DAG (`lakehouse_ingestion_pipeline`) runs on a daily schedule starting from `2026-06-10`. Since `catchup=True` is enabled:
+1. Airflow backfills the execution history sequentially.
+2. For each day, `generate_mock_data.py` generates order and catalog streams for that execution date, uploading them as JSON lines into target landing paths.
+3. Next, `bronze_to_silver.py` reads the daily partition, runs data quality cleanups, and merges the records into Iceberg tables.
+4. Lastly, `silver_to_gold.py` updates the analytical data marts based on the updated transactions.
 
-```text
-==================================================
-RUNNING PLATFORM FOUNDATION VERIFICATION (PHASE 1)
-==================================================
-[2026-06-15 21:00:00] INFO [verify_infra:10] Starting verification of Iceberg REST Catalog...
-[2026-06-15 21:00:00] INFO [verify_infra:15] 🟢 SUCCESS: Iceberg REST Catalog responded with HTTP 200.
-[2026-06-15 21:00:00] INFO [verify_infra:28] Starting verification of MinIO connection and buckets...
-[2026-06-15 21:00:01] INFO [verify_infra:41] Connected to MinIO. Found buckets: ['landing-zone', 'warehouse']
-[2026-06-15 21:00:01] INFO [verify_infra:46] 🟢 SUCCESS: Verified presence of buckets: ['landing-zone', 'warehouse']
-==================================================
-[2026-06-15 21:00:01] INFO [verify_infra:57] 🟢 SUCCESS: Platform foundation environment is fully healthy!
+---
+
+## 🔍 Data Exploration
+
+### Command-Line Summary
+To view table schemas, row counts, and execute sample SQL analytical queries across conformed tables, run the custom CLI explorer:
+```bash
+docker exec -it lakehouse-spark-master python /home/jovyan/src/explore_data.py
+```
+
+### Jupyter Interactive Notebooks
+Navigate to [http://localhost:8888](http://localhost:8888) in your browser. All required catalog configurations are pre-loaded in the container environment. You can instantiate a Spark Session in Python and query the tables immediately:
+```python
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.getOrCreate()
+
+# Query daily gold metrics
+spark.sql("SELECT * FROM demo.db.gold_daily_sales ORDER BY order_date DESC").show()
 ```
