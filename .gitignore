@@ -1,0 +1,32 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Docker persistent data
+minio_data/
+postgres_data/
+
+# Application logs
+logs/
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
