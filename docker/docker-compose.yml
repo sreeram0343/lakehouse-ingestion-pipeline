@@ -23,7 +23,7 @@ services:
 
   # --- MINIO INITIALIZATION CONTAINER ---
   minio-init:
-    image: minio/mc:RELEASE.2024-01-28T22-40-05Z
+    image: minio/mc:RELEASE.2024-01-28T16-23-14Z
     container_name: lakehouse-minio-init
     depends_on:
       minio:
@@ -44,7 +44,7 @@ services:
 
   # --- APACHE ICEBERG REST CATALOG ---
   iceberg-catalog:
-    image: tabular/iceberg-rest:0.6.0
+    image: tabulario/iceberg-rest:0.6.0
     container_name: lakehouse-catalog
     ports:
       - "8181:8181" # REST API Port
